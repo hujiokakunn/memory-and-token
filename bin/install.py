@@ -22,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _common import HARNESS_ROOT, memory_dir  # noqa: E402
 
-MARK = "harness/hooks/session_start.py"
+MARK = "/hooks/session_start.py"  # フォルダ名に依存させない
 CLAUDE_MD_MARK = "<!-- harness:memory-token -->"
 
 
