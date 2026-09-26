@@ -1,0 +1,10 @@
+{
+  "memory_dir": "data/memory",
+  "state_dir": ".state",
+  "budget_bytes": 120000,
+  "growth_warn_ratio": 0.10,
+  "always_loaded": [
+    "~/.claude/CLAUDE.md",
+    "{memory_dir}/MEMORY.md"
+  ]
+}

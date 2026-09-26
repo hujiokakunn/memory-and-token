@@ -1,0 +1,6 @@
+# 個人データ・PC固有状態は公開しない
+data/*
+!data/MEMORY.md.example
+.state/
+harness.config.local.json
+__pycache__/

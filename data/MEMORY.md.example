@@ -1,0 +1,3 @@
+# MEMORY（global層の索引。毎セッションこれだけ読まれる）
+
+- [例: 出力は日本語](feedback-japanese-output.md) — 全出力を日本語にする
