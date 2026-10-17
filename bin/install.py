@@ -102,7 +102,8 @@ def main(argv=None) -> int:
 
     sp = cdir / "settings.json"
     try:
-        settings = json.loads(sp.read_text(encoding="utf-8")) if sp.exists() else {}
+        # Windows PowerShell 5 の Set-Content -Encoding UTF8 は BOM を付ける。壊れていないので utf-8-sig で読む
+        settings = json.loads(sp.read_text(encoding="utf-8-sig")) if sp.exists() else {}
     except json.JSONDecodeError as e:
         sys.exit(f"エラー: {sp} が壊れている（{e}）。手で直してから再実行。")
     write(sp, json.dumps(update_settings(settings, a.uninstall), ensure_ascii=False, indent=2) + "\n", a.dry_run)

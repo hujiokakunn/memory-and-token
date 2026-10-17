@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sqlite3
 import sys
@@ -54,8 +55,29 @@ def db_path() -> Path:
     return state_dir() / "memory_index.sqlite"
 
 
-def newest_mtime(root: Path) -> float:
-    return max((p.stat().st_mtime for p in iter_notes(root)), default=0.0)
+def fingerprint(root: Path) -> str:
+    """記憶フォルダの状態（パス・更新時刻・サイズの全組）。
+
+    「最新の更新時刻 > 索引の時刻」だけでは、削除したノートが残り、元の時刻を保ったまま
+    同期で届いたノート（Drive等）が永久に索引へ入らない。集合全体の指紋で比べる。
+    """
+    h = hashlib.sha256()
+    for p in iter_notes(root):
+        st = p.stat()
+        h.update(f"{p.relative_to(root).as_posix()}\0{st.st_mtime_ns}\0{st.st_size}\n".encode("utf-8"))
+    return h.hexdigest()
+
+
+def stored_fingerprint(dbp: Path) -> str | None:
+    try:
+        con = sqlite3.connect(dbp)
+        try:
+            row = con.execute("SELECT v FROM info WHERE k='fingerprint'").fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
 
 
 def build(root: Path) -> int:
@@ -82,6 +104,7 @@ def build(root: Path) -> int:
         n += 1
     con.execute("CREATE TABLE info(k, v)")
     con.execute("INSERT INTO info VALUES ('fts', ?)", (int(fts),))
+    con.execute("INSERT INTO info VALUES ('fingerprint', ?)", (fingerprint(root),))
     con.commit()
     con.close()
     tmp.replace(dbp)
@@ -90,7 +113,7 @@ def build(root: Path) -> int:
 
 def search(root: Path, query: str, type_: str | None, agent: str | None, top: int) -> list[dict]:
     dbp = db_path()
-    if not dbp.exists() or dbp.stat().st_mtime < newest_mtime(root):
+    if not dbp.exists() or stored_fingerprint(dbp) != fingerprint(root):
         build(root)
     con = sqlite3.connect(dbp)
     con.row_factory = sqlite3.Row
