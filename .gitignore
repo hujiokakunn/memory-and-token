@@ -1,6 +1,12 @@
 # 個人データ・PC固有状態は公開しない
+# （既定の置き場は ~/.claude-harness/ でリポジトリの外。下は旧版の既定と、誤って中に置いた場合の保険）
+# 注意: .gitignore が効くのは git push だけ。ZIP・Webアップロード・フォルダのコピーでは効かない
 data/*
 !data/MEMORY.md.example
 .state/
 harness.config.local.json
+*.bak
+*.bak.orig
+.env
+.env.*
 __pycache__/

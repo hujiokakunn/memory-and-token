@@ -1,8 +1,9 @@
 {
-  "memory_dir": "data/memory",
-  "state_dir": ".state",
+  "memory_dir": "~/.claude-harness/memory",
+  "state_dir": "~/.claude-harness/state",
   "budget_bytes": 120000,
   "growth_warn_ratio": 0.10,
+  "max_lines_per_file": 200,
   "always_loaded": [
     "~/.claude/CLAUDE.md",
     "{memory_dir}/MEMORY.md"
