@@ -8,7 +8,7 @@
 やること（冪等。何度実行しても重複しない）:
   1. 記憶フォルダを初期化（既存は触らない）。旧版の既定（ハーネス内 data/memory・.state）に
      個人データがあれば、ハーネスの外（既定 ~/.claude-harness/）へ移す
-  2. ~/.claude/settings.json の hooks.SessionStart にフックを1本登録（このPCでの絶対パス・python実体）
+  2. ~/.claude/settings.json の hooks.SessionStart と hooks.InstructionsLoaded にフックを1本ずつ登録（このPCでの絶対パス・python実体）
   3. ~/.claude/CLAUDE.md に @import 1行を追記（規約本文は常時読込に入れず、入口の1行だけ）
 ハーネスを移動したら再実行すれば新しい場所へ張り替わる。
 """
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import shutil
 import sys
 from datetime import datetime
@@ -26,34 +27,63 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _common import HARNESS_ROOT, LEGACY_MEMORY_DIR, LEGACY_STATE_DIR, ensure_private_dir, \
     inside_harness, load_config, memory_dir, state_dir_path  # noqa: E402
 
-MARK = "/hooks/session_start.py"  # フォルダ名に依存させない
 CLAUDE_MD_MARK = "<!-- harness:memory-token -->"
+# 登録するフック: イベント名 → (スクリプト, timeout秒)。目印はスクリプトのパス末尾（フォルダ名に依存させない）
+HOOKS = {
+    "SessionStart": ("session_start.py", 30),       # 記憶の索引と予算警告を注入
+    "InstructionsLoaded": ("instructions_loaded.py", 10),  # 実際に読まれた指示ファイルを記録（実測）
+}
 
 
-def hook_command() -> str:
+def hook_command(script: str = "session_start.py") -> str:
     py = Path(sys.executable).as_posix()
-    return f'"{py}" "{(HARNESS_ROOT / "hooks" / "session_start.py").as_posix()}"'
+    return f'"{py}" "{(HARNESS_ROOT / "hooks" / script).as_posix()}"'
 
 
-def is_ours(h: dict) -> bool:
-    return MARK in h.get("command", "").replace("\\", "/")
+def is_ours(h: dict, script: str = "session_start.py") -> bool:
+    """このハーネス（または移動・改名前の同じハーネス）が登録したフックか。
+
+    スクリプト名だけで判定すると、同じ名前の他製品のフックを黙って消してしまう。
+    次のどれかのときだけ自分のものとみなす: 今の場所を指す／指す先がハーネスの形（bin/memory.py がある）／
+    指す先がもう無い（ハーネスを移動した後の古い登録）。
+    """
+    try:
+        tokens = shlex.split(h.get("command", "").replace("\\", "/"))
+    except ValueError:  # 引用符の閉じ忘れ等。読めないものは消さない
+        return False
+    py = [t for t in tokens if t.endswith(".py")]
+    if not py or not py[-1].endswith(f"/hooks/{script}"):
+        return False
+    target = Path(py[-1])
+    if not target.is_absolute():  # 自分は必ず引用符つきの絶対パスで登録する。それ以外は他製品とみなす
+        return False
+    if target == (HARNESS_ROOT / "hooks" / script) or not target.exists():
+        return True
+    return (target.parents[1] / "bin" / "memory.py").is_file()
 
 
 def update_settings(settings: dict, uninstall: bool) -> dict:
     hooks = settings.setdefault("hooks", {})
-    groups = hooks.get("SessionStart", [])
-    cleaned = []
-    for g in groups:
-        g = dict(g)
-        g["hooks"] = [h for h in g.get("hooks", []) if not is_ours(h)]
-        if g["hooks"]:
-            cleaned.append(g)
-    if not uninstall:
-        cleaned.append({"hooks": [{"type": "command", "command": hook_command(), "timeout": 30}]})
-    if cleaned:
-        hooks["SessionStart"] = cleaned
-    else:
-        hooks.pop("SessionStart", None)
+    for event, (script, timeout) in HOOKS.items():
+        cleaned = []
+        current = hook_command(script)
+        for g in hooks.get(event, []):
+            g = dict(g)
+            kept = []
+            for h in g.get("hooks", []):
+                if not is_ours(h, script):
+                    kept.append(h)
+                elif h.get("command") != current:  # 張り替え・削除したものは見せる（他製品を消していないか確かめられる）
+                    print(f"外す（{event}）: {h.get('command')}")
+            g["hooks"] = kept
+            if g["hooks"]:
+                cleaned.append(g)
+        if not uninstall:
+            cleaned.append({"hooks": [{"type": "command", "command": hook_command(script), "timeout": timeout}]})
+        if cleaned:
+            hooks[event] = cleaned
+        else:
+            hooks.pop(event, None)
     if not hooks:
         settings.pop("hooks")
     return settings
@@ -170,6 +200,9 @@ def main(argv=None) -> int:
             print("⚠ 記憶フォルダがハーネスの中にある。フォルダごと共有すると記憶も出ていく")
         print("完了。Claude Code を再起動すると SessionStart で索引と予算警告が注入される。")
         print("公開・共有する前は `py bin/publish_check.py` を実行すること。")
+    if a.uninstall and not a.dry_run:
+        print(f"登録を外した。記憶と台帳は残る: {memory_dir()} / {state_dir_path()}"
+              "（台帳には読み込んだファイルの絶対パスが載っている。不要ならフォルダごと削除してよい）")
     return 0
 
 

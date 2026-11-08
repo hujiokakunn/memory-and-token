@@ -17,6 +17,7 @@ SessionStart フックの出力や `paths:` 付き rules の遅延読込は数�
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import re
 import sys
@@ -122,6 +123,70 @@ def previous(log: Path, cwd: str) -> dict | None:
     return None
 
 
+START_REASONS = ("session_start", "include")  # 起動時に載るもの（遅延読込・圧縮後の再読込は除く）
+
+
+SAFE_NAME = re.compile(r"[^\w.\-+ ()　-ヿ一-鿿]")  # 英数・記号少々・かな・漢字だけを残す
+NAME_MAX = 40
+
+
+def shown_name(path: str) -> str:
+    """警告欄（データ枠の外＝文脈では信頼される側）に載せるファイル名。
+
+    ファイル名は他人のリポジトリ由来でありうる。改行や文章を混ぜて偽の指示行を作らせないよう、
+    許可した文字以外を `?` に置き換え、長さを切る。
+    """
+    # 空白も `_` に変える（文章型の名前を、読める一文のまま信頼側の欄に載せない）
+    name = SAFE_NAME.sub("?", Path(path).name).replace(" ", "_")
+    return name if len(name) <= NAME_MAX else name[:NAME_MAX - 1] + "…"
+
+
+@functools.lru_cache(maxsize=4096)  # 台帳の各行で呼ぶ。resolve は1回約1msかかる（850行で約1秒・Windows実測）
+def norm_path(s: str) -> str:
+    """比較用のパス表記。Windows・macOS は大文字小文字を区別しない。"""
+    try:
+        s = str(Path(s).resolve())
+    except (OSError, ValueError, RuntimeError):  # RuntimeError: 3.12 以前の resolve でのリンク循環
+        pass
+    return s.lower() if sys.platform in ("win32", "darwin") else s
+
+
+def actual_last_session(log: Path, cwd: str, exclude_sid: str = "") -> dict | None:
+    """InstructionsLoaded の台帳から、同じフォルダの直近セッションが起動時に実際に読んだファイルを返す（実測）。
+
+    exclude_sid（今始まったセッション）は除く。InstructionsLoaded と SessionStart の発火順は公式に明記が無く、
+    読込途中の自分自身を「前回」として数えると過小計上と誤警告になる。
+    """
+    if not log.exists():
+        return None
+    with log.open("rb") as f:
+        f.seek(max(0, log.stat().st_size - LOG_TAIL))
+        lines = f.read().decode("utf-8", errors="replace").splitlines()
+    want = norm_path(cwd)
+    recs = []
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not (isinstance(r, dict) and all(isinstance(r.get(k), str) and r[k] for k in ("session_id", "file_path", "cwd"))):
+            continue
+        if r["session_id"] != exclude_sid and r.get("load_reason") in START_REASONS \
+                and norm_path(r["cwd"]) == want:  # 別フォルダのセッションと比べない
+            recs.append(r)
+    if not recs:
+        return None
+    sid = recs[-1]["session_id"]
+    files: dict[str, dict] = {}
+    for r in recs:
+        if r["session_id"] == sid:
+            files[norm_path(r["file_path"])] = r
+    sized = [r["bytes"] for r in files.values()
+             if isinstance(r.get("bytes"), int) and not isinstance(r["bytes"], bool) and r["bytes"] >= 0]
+    return {"session_id": sid, "ts": recs[-1].get("ts", ""), "files": list(files.values()),
+            "total_bytes": sum(sized), "unsized": len(files) - len(sized)}
+
+
 def append(log: Path, rec: dict) -> None:
     with log.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -136,6 +201,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--cwd", default=".")
+    ap.add_argument("--exclude-session", default="", help="実測の集計から除くセッションID（今始まったセッション）")
     a = ap.parse_args(argv)
     cfg = load_config()
     cwd = Path(a.cwd).resolve()
@@ -154,10 +220,25 @@ def main(argv=None) -> int:
     max_lines = int(cfg.get("max_lines_per_file", 200))
     long_files = [f for f in rec["files"] if f["lines"] > max_lines]
     if long_files:  # 公式の目安は1ファイル200行未満（長いほど守られにくくなる）
-        warns.append(f"{max_lines}行超: " + ", ".join(f"{Path(f['path']).name} {f['lines']}行" for f in long_files[:5]))
+        warns.append(f"{max_lines}行超: " + ", ".join(f"{shown_name(f['path'])} {f['lines']}行" for f in long_files[:5]))
+    try:  # 実測は補助。台帳が壊れていても推定の警告は出す
+        act = actual_last_session(state_dir(cfg) / "instructions-loaded.jsonl", rec["cwd"], a.exclude_session)
+    except (OSError, ValueError) as e:
+        act = None
+        warns.append(f"実測の台帳を読めなかった（{type(e).__name__}）")
+    if act:
+        if act["total_bytes"] > budget:
+            warns.append(f"前回セッションの実測 {act['total_bytes']:,}B が予算 {budget:,}B を超過")
+        if act["unsized"]:
+            warns.append(f"実測のうち {act['unsized']} ファイルはサイズを測れず合計に入っていない（4MiB超・消失・読込失敗）")
+        estimated = {norm_path(f["path"]) for f in rec["files"]}
+        missed = [r for r in act["files"] if norm_path(r["file_path"]) not in estimated]
+        if missed:  # 推定の規則が公式の読込規則からずれた合図
+            warns.append("推定から漏れた常時読込（実測にだけある）: "
+                         + ", ".join(shown_name(r["file_path"]) for r in missed[:5]))
     if warns:
         top = sorted(rec["files"], key=lambda f: -f["bytes"])[:3]
-        warns.append("大きい順: " + ", ".join(f"{Path(f['path']).name} {f['bytes']:,}B" for f in top))
+        warns.append("大きい順: " + ", ".join(f"{shown_name(f['path'])} {f['bytes']:,}B" for f in top))
         warns.append("直近で足した行を「消したら間違えるか」で見直すこと。")
 
     if not a.quiet:
@@ -165,7 +246,11 @@ def main(argv=None) -> int:
         for f in rec["files"]:
             via = f"  ←@取込{f['hop']}段" if f["hop"] else ""
             print(f"  {f['bytes']:>9,}B {f['lines']:>5}行  {f['path']}{via}")
-        print("実際の内訳は Claude Code の `/context` で確認できる（この数字は静的な推定）。")
+        if act:
+            print(f"実測（前回セッション起動時・InstructionsLoaded）: {act['total_bytes']:,}B / {len(act['files'])} ファイル（{act['ts']}）")
+        else:
+            print("実測: 記録なし（InstructionsLoaded フック未登録か、登録後にセッションを起動していない。`py bin/install.py`）")
+        print("実際の内訳は Claude Code の `/context` で確認できる（上の推定は静的、実測は起動時に読まれたファイルの合計）。")
     for w in warns:
         print(f"⚠ token-budget: {w}")
     return 0

@@ -6,7 +6,7 @@
 | ハーネス | できること | 規約 | 道具 |
 |---|---|---|---|
 | 記憶 | 知見を正しい層へ1ファイル1事実で書き、必要時だけ検索で引く | [memory/AGENTS.md](memory/AGENTS.md) | `bin/memory.py` |
-| トークン | 常時読込の総量を測り、予算超過・急増を警告。読む量/往復/書く量の規約 | [token/AGENTS.md](token/AGENTS.md) | `bin/token_budget.py` |
+| トークン | 常時読込の総量を測り（静的推定＋起動時の実測）、予算超過・急増を警告。読む量/往復/書く量の規約 | [token/AGENTS.md](token/AGENTS.md) | `bin/token_budget.py` |
 
 ## 導入手順（Windows・買ったばかりのPCから）
 
@@ -96,8 +96,9 @@ py bin\install.py
 
 `install.py` が行うことは次の3つです。何度実行しても重複しません。
 
-1. Claude Code の設定ファイル（`C:\Users\<あなた>\.claude\settings.json`）に、
-   セッション開始時に動く処理（フック）を1つ登録する。元のファイルは `settings.json.bak` として残す。
+1. Claude Code の設定ファイル（`C:\Users\<あなた>\.claude\settings.json`）に、処理（フック）を2つ登録する。
+   セッション開始時に記憶の目次を渡すものと、実際に読み込まれた指示ファイルを記録するもの（トークン量の実測用）。
+   元のファイルは `settings.json.bak` として残す。
 2. `C:\Users\<あなた>\.claude\CLAUDE.md` の末尾に、ハーネスの入口（`ENTRY.md`）を読み込む1行を足す。
 3. 記憶の置き場所 `C:\Users\<あなた>\.claude-harness\memory\` と、その目次 `MEMORY.md` を作る
    （**ハーネスのフォルダの外**。旧版の既定 `harness\data\memory\` に記憶があれば、ここへ移す）。
